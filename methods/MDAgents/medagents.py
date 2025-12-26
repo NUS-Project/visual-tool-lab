@@ -5,7 +5,6 @@ from tqdm import tqdm
 from prettytable import PrettyTable 
 from termcolor import cprint
 from pptree import Node
-import google.generativeai as genai
 from openai import OpenAI
 from pptree import *
 import transformers
@@ -32,71 +31,24 @@ def load_config(file_path: str) -> dict:
 def setup_model(model_name):
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
-
-    config_path = os.environ["MODEL_API_CONFIG_PATH"]
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-    model_cfg = cfg.get(model_name)
-
-    if "gpt" in model_name:
-        api_key = model_cfg.get("api_key")
-        base_url = model_cfg.get("model_url")
-        client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
-        _MODEL_CACHE[model_name] = client
-        return client
-
-    elif model_name == 'Llama-3.3-70B-Instruct':
+    model_path=os.getenv("GENERAL_MODEL_PATH")
+    if model_name == 'Llama-3.3-70B-Instruct':
         pipeline = transformers.pipeline(
             "text-generation",
-            model=model_cfg.get("model_path"),
+            model=os.path.join(model_path, model_name),
             model_kwargs={"torch_dtype": torch.bfloat16},
             device_map="auto",
         )
         _MODEL_CACHE[model_name] = pipeline
         return pipeline
-
-    elif 'gemini' in model_name:
-        genai.configure(api_key=os.environ['genai_api_key'])
-        _MODEL_CACHE[model_name] = genai
-        return genai
-
     else:
         raise ValueError(f"Unsupported model: {model_name}")
-# def setup_model(model_name):
-#     config_path=os.environ["MODEL_API_CONFIG_PATH"]
-#     with open(config_path, "r", encoding="utf-8") as f:
-#         cfg = json.load(f)       
-#     key = model_name
-#     model_cfg = cfg.get(key)     
-#     if "gpt" in key:
-#         api_key = model_cfg.get("api_key")
-#         base_url = model_cfg.get("model_url")  # 你配置里叫 model_url
-
-#         if not api_key:
-#             raise KeyError(f"Missing 'api_key' for model '{key}' in config.")
-
-#         # 有 base_url 就两个参数；没有就只传 api_key
-#         if base_url:
-#             client = OpenAI(api_key=api_key, base_url=base_url)
-#         else:
-#             client = OpenAI(api_key=api_key)
-
-#         return client  
-#     elif 'gemini' in model_name:
-#         genai.configure(api_key=os.environ['genai_api_key'])
-#         return genai
-#     elif  model_name=='Llama-3.3-70B-Instruct':
-#         pipeline = transformers.pipeline(
-#                 "text-generation",
-#                 model=model_cfg.get("model_path"),
-#                 model_kwargs={"torch_dtype": torch.bfloat16},
-#                 device_map="auto",
-#             )
-#         return pipeline
-#     else:
-#         raise ValueError(f"Unsupported model: {model_name}")
 
 def parse_recruitment_json(recruited_text: str) -> List[Dict[str, Any]]:
+    start_index = recruited_text.find('{')
+    end_index = recruited_text.rfind('}')
+    # 切割出有效的 JSON 字符串
+    recruited_text = recruited_text[start_index:end_index + 1]
     data = json.loads(recruited_text)
 
     groups_out = []
@@ -124,17 +76,21 @@ def parse_recruitment_json(recruited_text: str) -> List[Dict[str, Any]]:
     return groups_out
 
 class Agent:
-    def __init__(self, instruction, role,  model_info='gpt-4o-mini', img_path=None):
+    def __init__(self, instruction, role,  model_info='gemini-2.5-flash', img_path=None):
         self.instruction = instruction
         self.role = role
         self.model_info = model_info
         self.img_path = img_path
          
-        if self.model_info == 'gemini-pro':
-            self.model = genai.GenerativeModel('gemini-pro')
-            self._chat = self.model.start_chat(history=[])
+        if self.model_info == 'gemini-2.5-flash':
+            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("BASE_URL"))
+            self.messages = [
+                {"role": "system", "content": instruction},
+            ]
+            # self.model = genai.GenerativeModel('gemini-2.5-flash')
+            # self._chat = self.model.start_chat(history=[])
         elif self.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini']:
-            self.client = setup_model(model_info)
+            self.client =  OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("BASE_URL"))
             self.messages = [
                 {"role": "system", "content": instruction},
             ]
@@ -143,7 +99,7 @@ class Agent:
             #         self.messages.append({"role": "user", "content": exampler['question']})
             #         self.messages.append({"role": "assistant", "content": exampler['answer'] + "\n\n" + exampler['reason']})
                     
-        elif self.model_info in ['Qwen',  'Llama-3.3-70B-Instruct']:
+        elif self.model_info =='Llama-3.3-70B-Instruct':
             self.pipeline = setup_model(model_info)
             self.messages = [
                 {"role": "system", "content": instruction},
@@ -151,17 +107,25 @@ class Agent:
 
     def chat(self, message, img_path=None, chat_mode=True):
         print("Message:",message)
-        if self.model_info == 'gemini-pro':
-            for _ in range(10):
-                try:
-                    response = self._chat.send_message(message, stream=True)
-                    responses = ""
-                    for chunk in response:
-                        responses += chunk.text + "\n"
-                    return responses
-                except:
-                    continue
-            return "Error: Failed to get response from Gemini."
+        if self.model_info == 'gemini-2.5-flash':
+            self.messages.append({"role": "user", "content": message})
+            response = self.client.chat.completions.create(
+                model=self.model_info,
+                messages=self.messages,
+                stream=False
+            )
+            self.messages.append({"role": "assistant", "content": response.choices[0].message.content})
+            return response.choices[0].message.content
+            # for _ in range(10):
+            #     try:
+            #         response = self._chat.send_message(message, stream=True)
+            #         responses = ""
+            #         for chunk in response:
+            #             responses += chunk.text + "\n"
+            #         return responses
+            #     except:
+            #         continue
+            # return "Error: Failed to get response from Gemini."
         
         elif self.model_info=='Llama-3.3-70B-Instruct':
             self.messages.append({"role": "user", "content": message})
@@ -188,24 +152,24 @@ class Agent:
             return response.choices[0].message.content
 
     def temp_responses(self, message, img_path=None):
-        if self.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini']:      
+        if self.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini','gemini-2.5-flash']:
             self.messages.append({"role": "user", "content": message})
             
-            temperatures = [0.0]
+            # temperatures = [0.0,0.5,1.0]
             
-            responses = {}
-            for temperature in temperatures:
-                if self.model_info == 'gpt-3.5':
-                    model_info = 'gpt-3.5-turbo'
-                else:
-                    model_info = 'gpt-4o-mini'
-                response = self.client.chat.completions.create(
-                    model=model_info,
-                    messages=self.messages,
-                    temperature=temperature,
-                )
-                
-                responses[temperature] = response.choices[0].message.content
+            # responses = {}
+            # for temperature in temperatures:
+            if self.model_info == 'gpt-3.5':
+                model_info = 'gpt-3.5-turbo'
+            else:
+                model_info = 'gpt-4o-mini'
+            response = self.client.chat.completions.create(
+                model=model_info,
+                messages=self.messages,
+                temperature=0.5,
+            )
+
+            responses = response.choices[0].message.content
                 
             return responses
         
@@ -225,11 +189,11 @@ class Agent:
             return responses
 
 class Group:
-    def __init__(self, goal, members, question):
+    def __init__(self, goal, members, question,model_info):
         self.goal = goal
         self.members = []
         for member_info in members:
-            _agent = Agent('You are a {} who {}.'.format(member_info['role'], member_info['expertise_description'].lower()), role=member_info['role'], model_info='gpt-4o-mini')
+            _agent = Agent('You are a {} who {}.'.format(member_info['role'], member_info['expertise_description'].lower()), role=member_info['role'], model_info=model_info)
             _agent.chat('You are a {} who {}.'.format(member_info['role'], member_info['expertise_description'].lower()))
             self.members.append(_agent)
         self.question = question
@@ -338,7 +302,7 @@ def parse_hierarchy(info, emojis):
 #     return parsed_info
 
 
-def mdagents_test(question,root_path,args):
+def mdagents_test(question,root_path):
     config_path = f'{root_path}/methods/MDAgents/configs/config_main.yaml'
     config = load_config(config_path)
     difficulty = config.get('difficulty', 'adaptive')
@@ -351,11 +315,12 @@ def mdagents_test(question,root_path,args):
     print(f"difficulty: {difficulty}")
 
     if difficulty == 'basic':
-        final_decision = process_basic_query(question,  args,model_info)
+        final_decision = process_basic_query(question,  model_info)
     elif difficulty == 'intermediate':
-        final_decision = process_intermediate_query(question,  args,model_info,intermediate_num_agents)
-    elif difficulty == 'advanced':
-        final_decision = process_advanced_query(question,args,prompt_file,model_info,num_teams,num_agents)
+        final_decision = process_intermediate_query(question,  model_info,intermediate_num_agents)
+    else:
+        # difficulty = 'advanced':
+        final_decision = process_advanced_query(question,prompt_file,model_info,num_teams,num_agents)
     return final_decision
 
 
@@ -386,7 +351,7 @@ def determine_difficulty(question, difficulty,model_info):
     else:
         return 'intermediate'
 
-def process_basic_query(question,  args,model_info):
+def process_basic_query(question, model_info):
     medical_agent = Agent(instruction='You are a helpful medical agent.', role='medical expert', model_info=model_info)
     # new_examplers = []
     # if args.dataset_name == 'medqa':
@@ -411,18 +376,31 @@ def process_basic_query(question,  args,model_info):
     final_decision = single_agent.temp_responses(f'''The following are multiple choice questions (with answers) about medical knowledge. Let's think step by step.\n\n**Question:** {question}\nAnswer: ''')
     return final_decision
 
-def process_intermediate_query(question,  args,model_info,intermediate_num_agents):
+def process_intermediate_query(question, model_info,intermediate_num_agents):
     cprint("[INFO] Step 1. Expert Recruitment", 'yellow', attrs=['blink'])
     recruit_prompt = f"""You are an experienced medical expert who recruits a group of experts with diverse identity and ask them to discuss and solve the given medical query."""
+    # 您是一位经验丰富的医学专家，招募了一群身份各异的专家，让他们讨论并解决给定的医学问题
     
     tmp_agent = Agent(instruction=recruit_prompt, role='recruiter', model_info=model_info)
     tmp_agent.chat(recruit_prompt)
     
     num_agents = intermediate_num_agents # You can adjust this number as needed
     recruited = tmp_agent.chat(f"Question: {question}\nYou can recruit {num_agents} experts in different medical expertise. Considering the medical question and the options for the answer, what kind of experts will you recruit to better make an accurate answer?\nAlso, you need to specify the communication structure between experts (e.g., Pulmonologist == Neonatologist == Medical Geneticist == Pediatrician > Cardiologist), or indicate if they are independent.\n\nFor example, if you want to recruit five experts, you answer can be like:\n1. Pediatrician - Specializes in the medical care of infants, children, and adolescents. - Hierarchy: Independent\n2. Cardiologist - Focuses on the diagnosis and treatment of heart and blood vessel-related conditions. - Hierarchy: Pediatrician > Cardiologist\n3. Pulmonologist - Specializes in the diagnosis and treatment of respiratory system disorders. - Hierarchy: Independent\n4. Neonatologist - Focuses on the care of newborn infants, especially those who are born prematurely or have medical issues at birth. - Hierarchy: Independent\n5. Medical Geneticist - Specializes in the study of genes and heredity. - Hierarchy: Independent\n\nPlease answer in above format, and do not include your reason.")
-
+    # 问题：{问题}\n您可以招募具有不同医学专长的{专家数量}名专家。
+    # 考虑到医学问题以及答案的选项，您会招募哪种类型的专家来更准确地给出答案呢？
+    # 此外，您需要明确专家之间的沟通结构（例如，肺科医生 == 新生儿科医生 == 医学遗传学家 == 儿科医生 > 心脏科医生），或者说明他们是否是独立的。
+    # \n\n例如，如果您想招募五名专家，您的回答可以是：
+    # \n1.儿科医生 - 专注于对婴儿、儿童和青少年的医疗护理。 - 层级：独立
+    # \n2.心脏科医生 - 专注于心脏和血管相关疾病的诊断和治疗。 - 层级：儿科医生 > 心脏科医生
+    # \n3.肺科医生 - 专注于诊断和治疗呼吸系统疾病。- 层级：独立
+    # \n4.新生儿科医生 - 专注于对早产儿或出生时有医疗问题的新生儿的护理。 - 层级：独立
+    # \n5.医学遗传学家 - 专注于基因和遗传的研究。- 层级：独立型
+    # \n\n请按照上述格式作答，且无需说明原因。
+    print(f"recruited:内容{recruited}")
     agents_info = [agent_info.split(" - Hierarchy: ") for agent_info in recruited.split('\n') if agent_info]
     agents_data = [(info[0], info[1]) if len(info) > 1 else (info[0], None) for info in agents_info]
+    print(f"agents_info:内容{agents_info}")
+    print(f"agents_data:内容{agents_data}")
 
     agent_emoji = ['\U0001F468\u200D\u2695\uFE0F', '\U0001F468\U0001F3FB\u200D\u2695\uFE0F', '\U0001F469\U0001F3FC\u200D\u2695\uFE0F', '\U0001F469\U0001F3FB\u200D\u2695\uFE0F', '\U0001f9d1\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3fd\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3fd\u200D\u2695\uFE0F', '\U0001F468\U0001F3FD\u200D\u2695\uFE0F']
     random.shuffle(agent_emoji)
@@ -457,20 +435,22 @@ def process_intermediate_query(question,  args,model_info,intermediate_num_agent
         except:
             print(f"Agent {idx+1} ({agent_emoji[idx]}): {agent[0]}")
 
-    fewshot_examplers = ""
-    # medical_agent = Agent(instruction='You are a helpful medical agent.', role='medical expert', model_info=model)
+    # fewshot_examplers = ""
+
     # if args.dataset_name == 'medqa':
-    #     random.shuffle(examplers)
-    #     for ie, exampler in enumerate(examplers[:5]):
-    #         exampler_question = f"[Example {ie+1}]\n" + exampler['question']
-    #         options = [f"({k}) {v}" for k, v in exampler['options'].items()]
-    #         random.shuffle(options)
-    #         exampler_question += " " + " ".join(options)
-    #         exampler_answer = f"Answer: ({exampler['answer_idx']}) {exampler['answer']}"
-    #         exampler_reason = tmp_agent.chat(f"Below is an example of medical knowledge question and answer. After reviewing the below medical question and answering, can you provide 1-2 sentences of reason that support the answer as you didn't know the answer ahead?\n\nQuestion: {exampler_question}\n\nAnswer: {exampler_answer}")
-            
-    #         exampler_question += f"\n{exampler_answer}\n{exampler_reason}\n\n"
-    #         fewshot_examplers += exampler_question
+    # random.shuffle(examplers)
+    # for ie, exampler in enumerate(examplers):
+    #     exampler_question = f"[Example {ie+1}]\n" + exampler['question']
+    #     options = [f"({k}) {v}" for k, v in exampler['options'].items()]
+    #     random.shuffle(options)
+    #     exampler_question += " " + " ".join(options)
+    #     medical_agent = Agent(instruction='You are a helpful medical agent.', role='medical expert',
+    #                           model_info=model_info)
+    #     exampler_answer = f"Answer: ({exampler['answer_idx']}) {exampler['answer']}"
+    #     exampler_reason = medical_agent.chat(f"Below is an example of medical knowledge question and answer. After reviewing the below medical question and answering, can you provide 1-2 sentences of reason that support the answer as you didn't know the answer ahead?\n\nQuestion: {exampler_question}\n\nAnswer: {exampler_answer}")
+    #     # 以下是一道医学知识题及其答案示例。在查看了下面的医学问题并给出答案后，请您提供 1 - 2 句支持该答案的解释，说明您之前并不知道答案。
+    #     exampler_question += f"\n{exampler_answer}\n{exampler_reason}\n\n"
+    #     fewshot_examplers += exampler_question
 
     print()
     cprint("[INFO] Step 2. Collaborative Decision Making", 'yellow', attrs=['blink'])
@@ -489,9 +469,15 @@ def process_intermediate_query(question,  args,model_info,intermediate_num_agent
     round_opinions = {n: {} for n in range(1, num_rounds+1)}
     round_answers = {n: None for n in range(1, num_rounds+1)}
     initial_report = ""
+    # print(f"fewshot_examplers:内容{fewshot_examplers}")
     for k, v in agent_dict.items():
-        opinion = v.chat(f'''Given the examplers, please return your answer to the medical query among the option provided.\n\n{fewshot_examplers}\n\nQuestion: {question}\n\nYour answer should be like below format.\n\nAnswer: ''', img_path=None)
+        # opinion = v.chat(f'''Given the examplers, please return your answer to the medical query among the option provided.\n\n{fewshot_examplers}\n\nQuestion: {question}\n\nYour answer should be like above format.\n\nAnswer: ''', img_path=None)
+        opinion = v.chat(
+            f'''Given the medical query below, please indicate the option you believe is correct and provide your reasoning.\nQuestion: {question}Your response should follow this format:\n1. Your chosen option.\n2. Your reasoning.''',
+            img_path=None)
+        print(f"opinion内容:{opinion}")
         initial_report += f"({k.lower()}): {opinion}\n"
+        print(f"initial_report内容:{initial_report}")
         round_opinions[1][k.lower()] = opinion
 
     final_answer = None
@@ -499,12 +485,26 @@ def process_intermediate_query(question,  args,model_info,intermediate_num_agent
         print(f"== Round {n} ==")
         round_name = f"Round {n}"
         agent_rs = Agent(instruction="You are a medical assistant who excels at summarizing and synthesizing based on multiple experts from various domain experts.", role="medical assistant", model_info=model_info)
+        # 你是一名医疗助理，擅长根据来自不同领域的多位专家的观点进行总结和综合分析。
         agent_rs.chat("You are a medical assistant who excels at summarizing and synthesizing based on multiple experts from various domain experts.")
+        # 你是一名医疗助理，擅长根据来自不同领域的多位专家的观点进行总结和综合分析。
         
         assessment = "".join(f"({k.lower()}): {v}\n" for k, v in round_opinions[n].items())
+        print(f"assessment内容:{assessment}")
 
         report = agent_rs.chat(f'''Here are some reports from different medical domain experts.\n\n{assessment}\n\nYou need to complete the following steps\n1. Take careful and comprehensive consideration of the following reports.\n2. Extract key knowledge from the following reports.\n3. Derive the comprehensive and summarized analysis based on the knowledge\n4. Your ultimate goal is to derive a refined and synthesized report based on the following reports.\n\nYou should output in exactly the same format as: Key Knowledge:; Total Analysis:''')
-        
+        # 您需要完成以下步骤：
+        # 1.
+        # 对以下报告进行仔细和全面的考量。
+        # 2.
+        # 从以下报告中提取关键知识。
+        # 3.
+        # 根据这些知识得出全面且总结性的分析。
+        # 4.
+        # 您的最终目标是基于以下报告得出一份精炼且综合的报告。
+        #
+        # 您应以以下格式输出：关键知识：；总分析：
+        print(f"num_turns:{num_turns}")
         for turn_num in range(num_turns):
             turn_name = f"Turn {turn_num + 1}"
             print(f"|_{turn_name}")
@@ -514,15 +514,21 @@ def process_intermediate_query(question,  args,model_info,intermediate_num_agent
                 all_comments = "".join(f"{_k} -> Agent {idx+1}: {_v[f'Agent {idx+1}']}\n" for _k, _v in interaction_log[round_name][turn_name].items())
                 
                 participate = v.chat("Given the opinions from other medical experts in your team, please indicate whether you want to talk to any expert (yes/no)\n\nOpinions:\n{}".format(assessment if n == 1 else all_comments))
-                
+                # 鉴于您团队中其他医学专家的意见，请告知您是否希望与任何专家进行交流（是 / 否）
                 if 'yes' in participate.lower().strip():                
                     chosen_expert = v.chat(f"Enter the number of the expert you want to talk to:\n{agent_list}\nFor example, if you want to talk with Agent 1. Pediatrician, return just 1. If you want to talk with more than one expert, please return 1,2 and don't return the reasons.")
-                    
+                    # 输入您想与哪位专家交谈的号码：
+                    # 专家1：骨科医生 - 专注于肌肉骨骼疾病的外科治疗。
+                    # 专家2：医学伦理学家 - 专注于医疗实践中的伦理问题，包括患者披露和知情同意。
+                    # 专家3：风险管理专家 - 在医疗环境中致力于降低风险，并提供法律和合规意见。
+                    # 专家4：患者倡导者 - 代表患者的利益和权利，确保医疗的透明度和沟通。
+                    # 专家5：医疗法律专家 - 专注于影响医疗实践的法律和法规，包括医疗事故和知情同意
+                    # 例如，如果您想与专家1交谈，请只返回1。如果您想与多个专家交谈，请返回1,2，并且不要返回理由。
                     chosen_experts = [int(ce) for ce in chosen_expert.replace('.', ',').split(',') if ce.strip().isdigit()]
 
                     for ce in chosen_experts:
                         specific_question = v.chat(f"Please remind your medical expertise and then leave your opinion to an expert you chose (Agent {ce}. {medical_agents[ce-1].role}). You should deliver your opinion once you are confident enough and in a way to convince other expert with a short reason.")
-                        
+                        # 请先展示您的专业知识，然后再将您的意见提交给您选定的专家。
                         print(f" Agent {idx+1} ({agent_emoji[idx]} {medical_agents[idx].role}) -> Agent {ce} ({agent_emoji[ce-1]} {medical_agents[ce-1].role}) : {specific_question}")
                         interaction_log[round_name][turn_name][f'Agent {idx+1}'][f'Agent {ce}'] = specific_question
                 
@@ -579,16 +585,27 @@ def process_intermediate_query(question,  args,model_info,intermediate_num_agent
     
     moderator = Agent("You are a final medical decision maker who reviews all opinions from different medical experts and make final decision.", "Moderator", model_info=model_info)
     moderator.chat('You are a final medical decision maker who reviews all opinions from different medical experts and make final decision.')
-    
-    _decision = moderator.temp_responses(f"Given each agent's final answer, please review each agent's opinion and make the final answer to the question by taking majority vote. Your answer should be like below format:\nAnswer: C) 2th pharyngeal arch\n{final_answer}\n\nQuestion: {question}", img_path=None)
+
+    print(f"final_answer内容：{final_answer}")
+
+    # _decision = moderator.temp_responses(f"Given each agent's final answer, please review each agent's opinion and make the final answer to the question by taking majority vote. Your answer should be like below format:\nAnswer: C) 2th pharyngeal arch\n{final_answer}\n\nQuestion: {question}", img_path=None)
+    _decision = moderator.temp_responses(
+        f"Question:{question}\nEach agent's final answer{final_answer}\nGiven each agent's final answer, please review each agent's opinion and make the final answer to the question by taking majority vote. You should Provide only the letter corresponding to your answer choice (A/B/C/D/E/F).",
+        img_path=None)
+
+    # 在给出每个代理的最终答案后，请审查每个代理的意见，并通过多数票得出对该问题的最终答案。您的答案应采用以下格式：
+    # 答案： C）第2个咽弓
+    # {最终答案}
+    # 问题： {问题}
+    #Provide only the letter corresponding to your answer choice (A/B/C/D/E/F).
     final_decision = {'majority': _decision}
 
     print("\U0001F468\u200D\u2696\uFE0F moderator's final decision (by majority vote):", _decision)
     print()
 
-    return final_decision
+    return _decision
 
-def process_advanced_query(question,  args,prompt_file,model_info,num_teams,num_agents):
+def process_advanced_query(question,  prompt_file,model_info,num_teams,num_agents):
     print("[STEP 1] Recruitment")
     group_instances = []
 
@@ -596,8 +613,10 @@ def process_advanced_query(question,  args,prompt_file,model_info,num_teams,num_
     #您是一位经验丰富的医学专家。面对如此复杂的医疗问题，您需要组建多学科团队（MDT），并让团队成员共同给出准确且可靠的解答。
     prompts_file = load_prompts_from_file(prompt_file)
     prompts_recruit = prompts_file["MEDICAL_ASSISTANT"]
+    print("MEDICAL_ASSISTANT",prompts_recruit)
+    print("MEDICAL_ASSISTANT",prompts_recruit)
     recruit_example = prompts_file["MEDICAL_RECRUIT"]
-    tmp_agent = Agent(instruction=prompts_recruit, role='recruiter', model_info=model_info)
+    tmp_agent = Agent(instruction=prompts_recruit, role='system', model_info=model_info)
     # tmp_agent.chat(prompts_recruit)
 
     # num_teams = 3  # You can adjust this number as needed
@@ -635,12 +654,12 @@ def process_advanced_query(question,  args,prompt_file,model_info,num_teams,num_
 
     print(f"[DEBUG] parsed {len(groups_parsed)} groups from JSON")
     for g in groups_parsed:
-        group_instances.append(Group(g["group_goal"], g["members"], question))
+        group_instances.append(Group(g["group_goal"], g["members"], question,model_info=model_info))
         
-    for i, g in enumerate(groups_parsed):
-        print(f"Group {i+1} - {g['group_goal']}")
-        for j, m in enumerate(g["members"]):
-            print(f" Member {j+1} ({m['role']}): {m['expertise_description']}")
+    # for i, g in enumerate(groups_parsed):
+    #     print(f"Group {i+1} - {g['group_goal']}")
+    #     for j, m in enumerate(g["members"]):
+    #         print(f" Member {j+1} ({m['role']}): {m['expertise_description']}")
 
         # IMPORTANT: Group expects members as list of {role, expertise_description}
         # group_instances.append(Group(g["group_goal"], g["members"], question))
