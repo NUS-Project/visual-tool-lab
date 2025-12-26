@@ -1,0 +1,12 @@
+{
+    "gpt-4o-mini": {
+        "model_url": "https://yinli.one/v1", 
+        "api_key": "sk-i5zo6MXMbPdCaPK6gP8Px1ZJQbKZysEAqVmUnWPLJkGFeFpJ"
+        
+    },
+    "Llama-3.3-70B-Instruct": {
+        "model_path": "/z_data/pretrained/Llama-3.3-70B-Instruct"
+        
+    }
+    
+}
