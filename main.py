@@ -2,59 +2,46 @@ import os
 import json
 import random
 import argparse
+from pathlib import Path
+import contextlib
+import io
+from datetime import datetime
 from tqdm import tqdm
 from termcolor import cprint
 from pptree import print_tree
 from prettytable import PrettyTable
 from methods.MDAgents.medagents import mdagents_test
+from methods.autogen import autogen_infer_medqa
+from methods.dylan import dylan_infer_medqa
 from methods.general_model import Llama_test,Qwen_test,QwenVL_Test
+from dataset_utils import load_test_split, format_question, extract_choice
 
-def load_data(dataset):
-    test_qa = []
-    # examplers = []
-
-    test_path = f'{dataset}/test.jsonl'
-    with open(test_path, 'r', encoding='utf-8') as file:
-        for line in file:
-            test_qa.append(json.loads(line))
-
-    # train_path = f'{dataset}/train.jsonl'
-    # with open(train_path, encoding='utf-8') as file:
-    #     for count, line in enumerate(file):
-    #         if count == 5:  # 只读取前5行
-    #             break
-    #         examplers.append(json.loads(line))
-
-    return test_qa
-
-def create_question(sample, dataset):
-    if dataset == 'medqa':
-        question = sample['question'] + " Options: "
-        options = []
-        for k, v in sample['options'].items():
-            options.append("({}) {}".format(k, v))
-        # random.shuffle(options)
-        question += " ".join(options)
-        return question
-    return sample['question']
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--general_model_path', type=str, default=r'E:\Code')
-parser.add_argument('--dataset_path', type=str, default=r'E:\Code\MedData')
+parser.add_argument('--general_model_path', type=str, default=str(PROJECT_ROOT / 'models'))
+parser.add_argument('--dataset_path', type=str, default=str(PROJECT_ROOT / 'data'))
 parser.add_argument('--dataset_name', type=str, default='medqa')
-parser.add_argument('--model', type=str, default='medagents',choices=['Qwen2.5-VL-72B-Instruct','Qwen2.5-72B-Instruct','medagents','Llama-3.3-70B-Instruct'])
-parser.add_argument('--root_path', type=str, default=r'E:\Code\MedToolLab')
+parser.add_argument(
+    '--model',
+    type=str,
+    default='medagents',
+    choices=['Qwen2.5-VL-72B-Instruct', 'Qwen2.5-72B-Instruct', 'medagents', 'autogen', 'dylan', 'Llama-3.3-70B-Instruct'],
+)
+parser.add_argument('--root_path', type=str, default=str(PROJECT_ROOT))
 parser.add_argument("--device", type=str, default="auto", help='Device / device_map, e.g. "cuda:3" or "auto"')
-parser.add_argument('--num_samples', type=int, default=5)
+parser.add_argument('--num_samples', type=int, default=2)
 args = parser.parse_args()
 
-os.environ["OPENAI_API_KEY"] = "sk-i5zo6MXMbPdCaPK6gP8Px1ZJQbKZysEAqVmUnWPLJkGFeFpJ"
-os.environ["BASE_URL"] = 'https://yinli.one/v1' #"https://hiapi.online/v1"
+args.root_path = str(Path(args.root_path).expanduser().resolve())
+args.general_model_path = str(Path(args.general_model_path).expanduser().resolve())
+args.dataset_path = str(Path(args.dataset_path).expanduser().resolve())
+
 os.environ["GENERAL_MODEL_PATH"] = args.general_model_path
 # MODEL_API_CONFIG_PATH = os.environ["MODEL_API_CONFIG_PATH"]
-model_paths = os.path.join(args.general_model_path, args.model)
-dataset_path_name = os.path.join(args.dataset_path, args.dataset_name)
-test_qa = load_data(dataset_path_name)
+model_paths = str(Path(args.general_model_path) / args.model)
+dataset_path_name = str(Path(args.dataset_path) / args.dataset_name)
+test_qa = load_test_split(dataset_path_name, args.dataset_name)
 
 agent_emoji = ['\U0001F468\u200D\u2695\uFE0F', '\U0001F468\U0001F3FB\u200D\u2695\uFE0F', '\U0001F469\U0001F3FC\u200D\u2695\uFE0F', '\U0001F469\U0001F3FB\u200D\u2695\uFE0F', '\U0001f9d1\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3fd\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3fd\u200D\u2695\uFE0F', '\U0001F468\U0001F3FD\u200D\u2695\uFE0F']
 random.shuffle(agent_emoji)
@@ -71,13 +58,16 @@ if "Qwen" in args.model:
     
     
 results = []
-correct_count=0
-for no, sample in enumerate(tqdm(test_qa)):
-    if no == args.num_samples:
-        break
-    print(f"\n[INFO] no: {no}")
+correct_count = 0
 
-    question = create_question(sample, args.dataset_name)
+num_total = len(test_qa)
+num_to_run = min(args.num_samples, num_total) if args.num_samples else num_total
+
+processed_count = 0
+for sample in tqdm(test_qa[:num_to_run], total=num_to_run, desc=f"Infer {args.model}", unit="sample"):
+    processed_count += 1
+
+    question = format_question(sample, args.dataset_name)
     if "Llama" in args.model:
         final_decision = llama_model.chat(question)
     elif "Qwen" in args.model and "VL" in args.model:
@@ -85,37 +75,69 @@ for no, sample in enumerate(tqdm(test_qa)):
     elif "Qwen" in args.model:
         final_decision = Qwen_model.chat(question)
     elif args.model=="medagents":
-        final_decision = mdagents_test(question, args.root_path)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            final_decision = mdagents_test(question, args.root_path)
+    elif args.model == "autogen":
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            final_decision = autogen_infer_medqa(question, args.root_path)
+    elif args.model == "dylan":
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            final_decision = dylan_infer_medqa(question, args.root_path)
         
     correct_answer_idx = sample['answer_idx']
     correct_answer_content = sample['options'][correct_answer_idx]
-    print(final_decision)
-    print(final_decision)
-    if final_decision.strip() == correct_answer_idx or final_decision.strip() == correct_answer_content:
+
+    pred = str(final_decision).strip()
+    extracted = extract_choice(pred, args.dataset_name)
+    if extracted:
+        pred = extracted
+
+    if pred == correct_answer_idx or pred == correct_answer_content:
         correct_count += 1
+        is_correct = True
     else:
-        print(f"{args.model} answers wrong:{final_decision}")
-        print(f"The right answer_idx:{correct_answer_idx}")
-        print(f"The right answer_content:{correct_answer_content}")
-        print("\n" + "="*80)
-        # if args.dataset_name == 'medqa':
-        results.append({
-            'question': question,
-            'answer': sample['answer'],
-            'label': sample['answer_idx'],
-            'model_response': final_decision,
-        })
+        is_correct = False
+
+    results.append({
+        'question': question,
+        'answer': sample.get('answer'),
+        'label': correct_answer_idx,
+        'label_text': correct_answer_content,
+        'model_response': pred,
+        'is_correct': is_correct,
+    })
     
 
 # Calculate accuracy
-accuracy = (correct_count / len(test_qa)) * 100 if args.num_samples > 0 else 0
+accuracy = (correct_count / processed_count) * 100 if processed_count > 0 else 0
 
 # Save results
-path = os.path.join(os.getcwd(), 'output')
-if not os.path.exists(path):
-    os.makedirs(path)
+path = Path(args.root_path) / 'output'
+path.mkdir(parents=True, exist_ok=True)
 
-with open(f'output/{args.model}_{args.dataset_name}.json', 'w') as file:
+# Build output filename: method + base model + dataset + timestamp
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+base_model_name = None
+if args.model == "medagents":
+    # For MDAgents, base model is declared in its own config.
+    try:
+        import yaml
+
+        cfg_path = Path(args.root_path) / "methods" / "MDAgents" / "configs" / "config_main.yaml"
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            base_model_name = (yaml.safe_load(f) or {}).get("model_info")
+    except Exception:
+        base_model_name = None
+elif args.model in {"autogen", "dylan"}:
+    # Current wrappers default to gpt-4o-mini unless you change the wrapper call.
+    base_model_name = "gpt-4o-mini"
+else:
+    base_model_name = args.model
+
+base_model_name = (base_model_name or "unknown").replace(" ", "_")
+
+output_file = path / f"{args.model}_{base_model_name}_{args.dataset_name}_{timestamp}.json"
+with open(output_file, 'w', encoding='utf-8') as file:
     json.dump(results, file, indent=4)
 
 # Print accuracy

@@ -10,10 +10,63 @@ from pptree import *
 import transformers
 import torch
 from typing import Any, Dict, List
+from pathlib import Path
 _MODEL_CACHE = {}
 
 
 import yaml
+
+
+def _load_json_if_exists(file_path: str) -> dict:
+    if not os.path.exists(file_path):
+        return {}
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _ensure_openai_env_from_configs(root_path: str, model_info: str) -> None:
+    """Populate OPENAI_API_KEY / BASE_URL from repo configs if env vars are missing.
+
+    Precedence:
+    1) Existing env vars
+    2) model_api_configs/model_api_config.json entry for model_info
+    """
+
+    resolved_root = str(Path(root_path).expanduser().resolve())
+
+    api_key = os.getenv('OPENAI_API_KEY')
+    base_url = os.getenv('BASE_URL')
+    if api_key and base_url:
+        return
+
+    api_cfg_path = Path(resolved_root) / 'model_api_configs' / 'model_api_config.json'
+    api_cfg = _load_json_if_exists(str(api_cfg_path))
+    model_cfg = api_cfg.get(model_info, {}) if isinstance(api_cfg, dict) else {}
+
+    if not model_cfg:
+        raise RuntimeError(
+            f"Missing model config for '{model_info}' in {api_cfg_path}. "
+            "Add an entry with at least 'api_key' and 'model_url' (or 'base_url')."
+        )
+
+    if not api_key:
+        key_from_cfg = model_cfg.get('api_key')
+        if key_from_cfg:
+            os.environ['OPENAI_API_KEY'] = key_from_cfg
+
+    if not base_url:
+        url_from_cfg = model_cfg.get('model_url') or model_cfg.get('base_url')
+        if url_from_cfg:
+            os.environ['BASE_URL'] = url_from_cfg
+
+    if not os.getenv('OPENAI_API_KEY'):
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Provide it via env var or 'api_key' in model_api_configs/model_api_config.json."
+        )
+    if not os.getenv('BASE_URL'):
+        raise RuntimeError(
+            "BASE_URL is not set. Provide it via env var or 'model_url'/'base_url' in model_api_configs/model_api_config.json."
+        )
 
 def load_config(file_path: str) -> dict:
     """
@@ -303,15 +356,16 @@ def parse_hierarchy(info, emojis):
 
 
 def mdagents_test(question,root_path):
-    config_path = f'{root_path}/methods/MDAgents/configs/config_main.yaml'
+    config_path = str(Path(root_path) / 'methods' / 'MDAgents' / 'configs' / 'config_main.yaml')
     config = load_config(config_path)
     difficulty = config.get('difficulty', 'adaptive')
     num_teams = config.get('num_teams', 3)  # Default to 3 if not specified
     num_agents = config.get('num_agents', 3)  # Default to 3 if not specified
     intermediate_num_agents= config.get('intermediate_num_agents', 5)
     model_info = config.get('model_info', 'Llama-3.3-70B-Instruct')  # Default to 3 if not specified
+    _ensure_openai_env_from_configs(root_path, model_info)
     difficulty = determine_difficulty(question, difficulty,model_info)
-    prompt_file=f"{root_path}/methods/MDAgents/Recruit_prompt.txt"
+    prompt_file = str(Path(root_path) / 'methods' / 'MDAgents' / 'Recruit_prompt.txt')
     print(f"difficulty: {difficulty}")
 
     if difficulty == 'basic':

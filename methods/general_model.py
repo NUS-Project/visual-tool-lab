@@ -1,7 +1,10 @@
 import transformers
 import torch
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor,AutoModelForCausalLM, AutoTokenizer
-from qwen_vl_utils import process_vision_info
+try:
+    from qwen_vl_utils import process_vision_info
+except ModuleNotFoundError:
+    process_vision_info = None
 
 class Qwen_test:
     def __init__(self, model_path: str, device: str):
@@ -100,6 +103,10 @@ class QwenVL_Test:
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+        if image_path and process_vision_info is None:
+            raise ModuleNotFoundError(
+                "Missing optional dependency 'qwen_vl_utils'. Install it to use Qwen-VL image inputs."
+            )
         image_inputs, video_inputs = process_vision_info(messages) if image_path else (None, None)
         
         inputs = self.processor(
