@@ -1,0 +1,37 @@
+[
+    {
+        "question": "Here is a patient. Here are the details about this patient. He should go to the Surgery department. Among these data, the first item represents his physical characteristics, and the second item indicates whether the feature is true or not. Explicit_symptoms: {Dizziness: True, Headache: True}. Implicit_symptoms: {unsteady vision: True, Numbness in the left hand: True}. Which disease is he most likely to have? Options: (A) Lacunar Stroke (B) Cervical Spondylosis of Sympathetic Type (C) Cerebral Insufficiency",
+        "answer": "Lacunar Stroke",
+        "right_option": "A",
+        "judge_result": "[Incorrect]",
+        "is_correct": false
+    },
+    {
+        "question": "Here is a patient. Here are the details about this patient. He should go to the Surgery department. Among these data, the first item represents his physical characteristics, and the second item indicates whether the feature is true or not. Explicit_symptoms: {Poor hand function: True, Hand stiffness: True, Without sensation: True}. Implicit_symptoms: {Wrist cut by glass: True, Thirteen Tendon Ruptures: True, Radial artery rupture: True, postoperative infection: True, Tendon Liquefaction and Rupture: True, Tendon overlapping: True}. Which disease is he most likely to have? Options: (A) Distal Radius Fracture (B) Neural Damage (C) Tenosynovitis",
+        "answer": "Neural Damage",
+        "right_option": "B",
+        "judge_result": "[Correct]",
+        "is_correct": true
+    },
+    {
+        "question": "Here is a patient. Here are the details about this patient. He should go to the Surgery department. Among these data, the first item represents his physical characteristics, and the second item indicates whether the feature is true or not. Explicit_symptoms: {Left chest pain upon pressure: True}. Implicit_symptoms: {Increased body temperature: True, Headache: True, Dizziness: True}. Which disease is he most likely to have? Options: (A) Mastitis (B) Lactational Mastitis (C) Breast Hyperplasia",
+        "answer": "Lactational Mastitis",
+        "right_option": "B",
+        "judge_result": "[Incorrect]",
+        "is_correct": false
+    },
+    {
+        "question": "Here is a patient. Here are the details about this patient. He should go to the Surgery department. Among these data, the first item represents his physical characteristics, and the second item indicates whether the feature is true or not. Explicit_symptoms: {Tumor Healing: True, Newly developed lump: True, Swelling and redness: True}. Implicit_symptoms: {Delayed menstruation: True, Prolactin test not updated: True, menstrual cycle returned to normal: True}. Which disease is he most likely to have? Options: (A) Mastitis (B) Plasma Cell Mastitis (C) Lactational Mastitis",
+        "answer": "Plasma Cell Mastitis",
+        "right_option": "B",
+        "judge_result": "[Incorrect]",
+        "is_correct": false
+    },
+    {
+        "question": "Here is a patient. Here are the details about this patient. He should go to the Surgery department. Among these data, the first item represents his physical characteristics, and the second item indicates whether the feature is true or not. Explicit_symptoms: {Uneven lymph nodes in the internal neck and submandibular area: True, Lymphadenopathy: True}. Implicit_symptoms: {Low autoimmunity: True, Acne: True}. Which disease is he most likely to have? Options: (A) Lymphoma (B) Thyroid Nodules (C) Lymphadenitis",
+        "answer": "Lymphadenitis",
+        "right_option": "C",
+        "judge_result": "[Correct]",
+        "is_correct": true
+    }
+]

@@ -11,6 +11,8 @@ import transformers
 import torch
 from typing import Any, Dict, List
 from pathlib import Path
+
+
 _MODEL_CACHE = {}
 
 
@@ -134,6 +136,9 @@ class Agent:
         self.role = role
         self.model_info = model_info
         self.img_path = img_path
+        self.token_stats = {
+            self.model_info: {"num_llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        }
          
         if self.model_info == 'gemini-2.5-flash':
             self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("BASE_URL"))
@@ -159,7 +164,7 @@ class Agent:
             ]
 
     def chat(self, message, img_path=None, chat_mode=True):
-        print("Message:",message)
+        # print("Message:",message)
         if self.model_info == 'gemini-2.5-flash':
             self.messages.append({"role": "user", "content": message})
             response = self.client.chat.completions.create(
@@ -167,6 +172,10 @@ class Agent:
                 messages=self.messages,
                 stream=False
             )
+            num_prompt_tokens, num_completion_tokens = response.usage.prompt_tokens, response.usage.completion_tokens
+            self.token_stats[self.model_info]["num_llm_calls"] += 1
+            self.token_stats[self.model_info]["prompt_tokens"] += num_prompt_tokens
+            self.token_stats[self.model_info]["completion_tokens"] += num_completion_tokens
             self.messages.append({"role": "assistant", "content": response.choices[0].message.content})
             return response.choices[0].message.content
             # for _ in range(10):
@@ -221,7 +230,10 @@ class Agent:
                 messages=self.messages,
                 temperature=0.5,
             )
-
+            num_prompt_tokens, num_completion_tokens = response.usage.prompt_tokens, response.usage.completion_tokens
+            self.token_stats[self.model_info]["num_llm_calls"] += 1
+            self.token_stats[self.model_info]["prompt_tokens"] += num_prompt_tokens
+            self.token_stats[self.model_info]["completion_tokens"] += num_completion_tokens
             responses = response.choices[0].message.content
                 
             return responses
@@ -241,6 +253,9 @@ class Agent:
                 responses += chunk.text + "\n"
             return responses
 
+    def get_token_stats(self):
+        return self.token_stats
+
 class Group:
     def __init__(self, goal, members, question,model_info):
         self.goal = goal
@@ -250,6 +265,10 @@ class Group:
             _agent.chat('You are a {} who {}.'.format(member_info['role'], member_info['expertise_description'].lower()))
             self.members.append(_agent)
         self.question = question
+        self.model_info =model_info
+        self.group_token_stats = {
+            self.model_info: {"num_llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        }
         # self.examplers = examplers
 
     def interact(self, comm_type, message=None, img_path=None):
@@ -292,11 +311,33 @@ class Group:
             investigation_prompt = f"""The gathered investigation from your asssitant clinicians is as follows:\n{gathered_investigation}.\n\nNow, return your answer to the medical query among the option provided.\n\nQuestion: {self.question}"""
 
             response = lead_member.chat(investigation_prompt)
+            num_llm_calls = 0
+            Prompt_Tokens = 0
+            completion_tokens = 0
+            lead_member_stats =lead_member.get_token_stats()
+            for model_name, stats in lead_member_stats.items():
+                num_llm_calls = stats['num_llm_calls']
+                Prompt_Tokens = stats['prompt_tokens']
+                completion_tokens = stats['completion_tokens']
+
+            for idx, agent in enumerate(assist_members):
+                idx_stats = agent.get_token_stats()
+                for model_name, stats in idx_stats.items():
+                    num_llm_calls = stats['num_llm_calls'] + num_llm_calls
+                    Prompt_Tokens = stats['prompt_tokens'] + Prompt_Tokens
+                    completion_tokens = stats['completion_tokens'] + completion_tokens
+
+            self.group_token_stats = {
+                self.model_info: {"num_llm_calls": num_llm_calls, "prompt_tokens": Prompt_Tokens, "completion_tokens": completion_tokens}
+            }
 
             return response
 
         elif comm_type == 'external':
             return
+
+    def get_group_token_stats(self):
+        return self.group_token_stats
 
 def parse_hierarchy(info, emojis):
     moderator = Node('moderator (\U0001F468\u200D\u2696\uFE0F)')
@@ -364,23 +405,42 @@ def mdagents_test(question,root_path):
     intermediate_num_agents= config.get('intermediate_num_agents', 5)
     model_info = config.get('model_info', 'Llama-3.3-70B-Instruct')  # Default to 3 if not specified
     _ensure_openai_env_from_configs(root_path, model_info)
-    difficulty = determine_difficulty(question, difficulty,model_info)
+    difficulty, token_stats_deter = determine_difficulty(question, difficulty,model_info)
+    num_llm_calls=0
+    Prompt_Tokens=0
+    completion_tokens=0
+    if token_stats_deter is not None:
+        for model_name, stats in token_stats_deter.items():
+            num_llm_calls = stats['num_llm_calls']
+            Prompt_Tokens = stats['prompt_tokens']
+            completion_tokens = stats['completion_tokens']
+            # print(f"Model: {model_name}, Calls: {stats['num_llm_calls']}, Prompt Tokens: {stats['prompt_tokens']}, Completion Tokens: {stats['completion_tokens']}")
     prompt_file = str(Path(root_path) / 'methods' / 'MDAgents' / 'Recruit_prompt.txt')
     print(f"difficulty: {difficulty}")
 
     if difficulty == 'basic':
-        final_decision = process_basic_query(question,  model_info)
+        final_decision, token_stats = process_basic_query(question,  model_info)
     elif difficulty == 'intermediate':
-        final_decision = process_intermediate_query(question,  model_info,intermediate_num_agents)
+        final_decision, token_stats = process_intermediate_query(question,  model_info,intermediate_num_agents)
     else:
         # difficulty = 'advanced':
-        final_decision = process_advanced_query(question,prompt_file,model_info,num_teams,num_agents)
-    return final_decision
+        final_decision, token_stats = process_advanced_query(question,prompt_file,model_info,num_teams,num_agents)
+
+    for model_name, stats in token_stats.items():
+        num_llm_calls = stats['num_llm_calls'] + num_llm_calls
+        Prompt_Tokens = stats['prompt_tokens'] + Prompt_Tokens
+        completion_tokens = stats['completion_tokens'] + completion_tokens
+
+    token_stats = {
+        model_info: {"num_llm_calls": num_llm_calls, "prompt_tokens": Prompt_Tokens,
+                     "completion_tokens": completion_tokens}
+    }
+    return final_decision, token_stats
 
 
 def determine_difficulty(question, difficulty,model_info):
     if difficulty != 'adaptive':
-        return difficulty
+        return difficulty,None
     
     difficulty_prompt = f"""You are a medical expert who conducts initial assessment and your job is to decide the difficulty/complexity of the medical query.Now, given the medical query as below, you need to decide the difficulty/complexity of it:\n{question}.\n\nPlease indicate the difficulty/complexity of the medical query among below options:\n1) basic: a single medical agent can output an answer.\n2) intermediate: number of medical experts with different expertise should dicuss and make final decision.\n3) advanced: multiple teams of clinicians from different departments need to collaborate with each other to make final decision."""
     # 现在，根据以下医疗问题，请您判断其难度/复杂程度：
@@ -395,40 +455,22 @@ def determine_difficulty(question, difficulty,model_info):
     # system:您是一位医疗专家，负责进行初步评估，您的任务是确定医疗问题的难易程度/复杂性。
     # medical_agent.chat('You are a medical expert who conducts initial assessment and your job is to decide the difficulty/complexity of the medical query.')
     response = medical_agent.chat(difficulty_prompt)
+    token_stats = medical_agent.get_token_stats()
 
     if 'basic' in response.lower() or '1)' in response.lower():
-        return 'basic'
+        return 'basic', token_stats
     elif 'intermediate' in response.lower() or '2)' in response.lower():
-        return 'intermediate'
+        return 'intermediate', token_stats
     elif 'advanced' in response.lower() or '3)' in response.lower():
-        return 'advanced'
+        return 'advanced', token_stats
     else:
-        return 'intermediate'
+        return 'intermediate', token_stats
 
 def process_basic_query(question, model_info):
-    medical_agent = Agent(instruction='You are a helpful medical agent.', role='medical expert', model_info=model_info)
-    # new_examplers = []
-    # if args.dataset_name == 'medqa':
-    #     random.shuffle(examplers)
-    #     for ie, exampler in enumerate(examplers[:5]):
-    #         tmp_exampler = {}
-    #         exampler_question = exampler['question']
-    #         choices = [f"({k}) {v}" for k, v in exampler['options'].items()]
-    #         random.shuffle(choices)
-    #         exampler_question += " " + ' '.join(choices)
-    #         exampler_answer = f"Answer: ({exampler['answer_idx']}) {exampler['answer']}\n\n"
-    #         exampler_reason = medical_agent.chat(f"You are a helpful medical agent. Below is an example of medical knowledge question and answer. After reviewing the below medical question and answering, can you provide 1-2 sentences of reason that support the answer as you didn't know the answer ahead?\n\nQuestion: {exampler_question}\n\nAnswer: {exampler_answer}")
-
-    #         tmp_exampler['question'] = exampler_question
-    #         tmp_exampler['reason'] = exampler_reason
-    #         tmp_exampler['answer'] = exampler_answer
-    #         new_examplers.append(tmp_exampler)
-    
     single_agent = Agent(instruction='You are a helpful assistant that answers multiple choice questions about medical knowledge.Provide only the letter corresponding to your answer choice (A/B/C/D/E/F).', role='medical expert',  model_info=model_info)
-    # single_agent.chat('You are a helpful assistant that answers multiple choice questions about medical knowledge.')
-    # final_decision = single_agent.temp_responses(f'''The following are multiple choice questions (with answers) about medical knowledge. Let's think step by step.\n\n**Question:** {question}\nAnswer: ''', img_path=None)
-    final_decision = single_agent.temp_responses(f'''The following are multiple choice questions (with answers) about medical knowledge. Let's think step by step.\n\n**Question:** {question}\nAnswer: ''')
-    return final_decision
+    final_decision= single_agent.temp_responses(f'''The following are multiple choice questions (with answers) about medical knowledge. Let's think step by step.\n\n**Question:** {question}\nAnswer: ''')
+    token_stats = single_agent.get_token_stats()
+    return final_decision,token_stats
 
 def process_intermediate_query(question, model_info,intermediate_num_agents):
     cprint("[INFO] Step 1. Expert Recruitment", 'yellow', attrs=['blink'])
@@ -440,6 +482,17 @@ def process_intermediate_query(question, model_info,intermediate_num_agents):
     
     num_agents = intermediate_num_agents # You can adjust this number as needed
     recruited = tmp_agent.chat(f"Question: {question}\nYou can recruit {num_agents} experts in different medical expertise. Considering the medical question and the options for the answer, what kind of experts will you recruit to better make an accurate answer?\nAlso, you need to specify the communication structure between experts (e.g., Pulmonologist == Neonatologist == Medical Geneticist == Pediatrician > Cardiologist), or indicate if they are independent.\n\nFor example, if you want to recruit five experts, you answer can be like:\n1. Pediatrician - Specializes in the medical care of infants, children, and adolescents. - Hierarchy: Independent\n2. Cardiologist - Focuses on the diagnosis and treatment of heart and blood vessel-related conditions. - Hierarchy: Pediatrician > Cardiologist\n3. Pulmonologist - Specializes in the diagnosis and treatment of respiratory system disorders. - Hierarchy: Independent\n4. Neonatologist - Focuses on the care of newborn infants, especially those who are born prematurely or have medical issues at birth. - Hierarchy: Independent\n5. Medical Geneticist - Specializes in the study of genes and heredity. - Hierarchy: Independent\n\nPlease answer in above format, and do not include your reason.")
+    num_llm_calls = 0
+    Prompt_Tokens = 0
+    completion_tokens = 0
+    token_stats_tmp_agent = tmp_agent.get_token_stats()
+    for model_name, stats in token_stats_tmp_agent.items():
+        num_llm_calls = stats['num_llm_calls']+num_llm_calls
+        Prompt_Tokens = stats['prompt_tokens']+Prompt_Tokens
+        completion_tokens = stats['completion_tokens']+completion_tokens
+        # print(
+        #     f"Model: {model_name}, Calls: {stats['num_llm_calls']}, Prompt Tokens: {stats['prompt_tokens']}, Completion Tokens: {stats['completion_tokens']}")
+        #
     # 问题：{问题}\n您可以招募具有不同医学专长的{专家数量}名专家。
     # 考虑到医学问题以及答案的选项，您会招募哪种类型的专家来更准确地给出答案呢？
     # 此外，您需要明确专家之间的沟通结构（例如，肺科医生 == 新生儿科医生 == 医学遗传学家 == 儿科医生 > 心脏科医生），或者说明他们是否是独立的。
@@ -450,11 +503,11 @@ def process_intermediate_query(question, model_info,intermediate_num_agents):
     # \n4.新生儿科医生 - 专注于对早产儿或出生时有医疗问题的新生儿的护理。 - 层级：独立
     # \n5.医学遗传学家 - 专注于基因和遗传的研究。- 层级：独立型
     # \n\n请按照上述格式作答，且无需说明原因。
-    print(f"recruited:内容{recruited}")
+    # print(f"recruited:内容{recruited}")
     agents_info = [agent_info.split(" - Hierarchy: ") for agent_info in recruited.split('\n') if agent_info]
     agents_data = [(info[0], info[1]) if len(info) > 1 else (info[0], None) for info in agents_info]
-    print(f"agents_info:内容{agents_info}")
-    print(f"agents_data:内容{agents_data}")
+    # print(f"agents_info:内容{agents_info}")
+    # print(f"agents_data:内容{agents_data}")
 
     agent_emoji = ['\U0001F468\u200D\u2695\uFE0F', '\U0001F468\U0001F3FB\u200D\u2695\uFE0F', '\U0001F469\U0001F3FC\u200D\u2695\uFE0F', '\U0001F469\U0001F3FB\u200D\u2695\uFE0F', '\U0001f9d1\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3fd\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3fd\u200D\u2695\uFE0F', '\U0001F468\U0001F3FD\u200D\u2695\uFE0F']
     random.shuffle(agent_emoji)
@@ -634,8 +687,16 @@ def process_intermediate_query(question, model_info,intermediate_num_agents):
             myTable.add_row(['' for _ in range(len(medical_agents)+1)])
     
     print(myTable)
+    print("\n[DEBUG] Medical Agents Stats:")
+    for idx, agent in enumerate(medical_agents):
+        idx_stats = agent.get_token_stats()
+        for model_name, stats in idx_stats.items():
+            num_llm_calls = stats['num_llm_calls'] + num_llm_calls
+            Prompt_Tokens = stats['prompt_tokens'] + Prompt_Tokens
+            completion_tokens = stats['completion_tokens'] + completion_tokens
 
     cprint("\n[INFO] Step 3. Final Decision", 'yellow', attrs=['blink'])
+
     
     moderator = Agent("You are a final medical decision maker who reviews all opinions from different medical experts and make final decision.", "Moderator", model_info=model_info)
     moderator.chat('You are a final medical decision maker who reviews all opinions from different medical experts and make final decision.')
@@ -652,12 +713,21 @@ def process_intermediate_query(question, model_info,intermediate_num_agents):
     # {最终答案}
     # 问题： {问题}
     #Provide only the letter corresponding to your answer choice (A/B/C/D/E/F).
-    final_decision = {'majority': _decision}
+    # _decision = ''.join(filter(lambda x: x.isalpha(), _decision)).upper()
+    # final_decision = {'majority': _decision}
+    token_stats_moderator = moderator.get_token_stats()
+    for model_name, stats in token_stats_moderator.items():
+        num_llm_calls = stats['num_llm_calls']+num_llm_calls
+        Prompt_Tokens = stats['prompt_tokens']+Prompt_Tokens
+        completion_tokens = stats['completion_tokens']+completion_tokens
 
     print("\U0001F468\u200D\u2696\uFE0F moderator's final decision (by majority vote):", _decision)
     print()
+    token_stats = {
+        model_info: {"num_llm_calls":num_llm_calls, "prompt_tokens": Prompt_Tokens, "completion_tokens": completion_tokens}
+    }
 
-    return _decision
+    return _decision,token_stats
 
 def process_advanced_query(question,  prompt_file,model_info,num_teams,num_agents):
     print("[STEP 1] Recruitment")
@@ -675,8 +745,16 @@ def process_advanced_query(question,  prompt_file,model_info,num_teams,num_agent
 
     # num_teams = 3  # You can adjust this number as needed
     # num_agents = 3  # You can adjust this number as needed
+    num_llm_calls=0
+    Prompt_Tokens=0
+    completion_tokens=0
     # recruited = tmp_agent.chat(f"Question: {question}\n\nYou should organize {num_teams} MDTs with different specialties or purposes and each MDT should have {num_agents} clinicians. Considering the medical question and the options, please return your recruitment plan to better make an accurate answer.\n\nFor example, the following can an example answer:\nGroup 1 - Initial Assessment Team (IAT)\nMember 1: Otolaryngologist (ENT Surgeon) (Lead) - Specializes in ear, nose, and throat surgery, including thyroidectomy. This member leads the group due to their critical role in the surgical intervention and managing any surgical complications, such as nerve damage.\nMember 2: General Surgeon - Provides additional surgical expertise and supports in the overall management of thyroid surgery complications.\nMember 3: Anesthesiologist - Focuses on perioperative care, pain management, and assessing any complications from anesthesia that may impact voice and airway function.\n\nGroup 2 - Diagnostic Evidence Team (DET)\nMember 1: Endocrinologist (Lead) - Oversees the long-term management of Graves' disease, including hormonal therapy and monitoring for any related complications post-surgery.\nMember 2: Speech-Language Pathologist - Specializes in voice and swallowing disorders, providing rehabilitation services to improve the patient's speech and voice quality following nerve damage.\nMember 3: Neurologist - Assesses and advises on nerve damage and potential recovery strategies, contributing neurological expertise to the patient's care.\n\nGroup 3 - Patient History Team (PHT)\nMember 1: Psychiatrist or Psychologist (Lead) - Addresses any psychological impacts of the chronic disease and its treatments, including issues related to voice changes, self-esteem, and coping strategies.\nMember 2: Physical Therapist - Offers exercises and strategies to maintain physical health and potentially support vocal function recovery indirectly through overall well-being.\nMember 3: Vocational Therapist - Assists the patient in adapting to changes in voice, especially if their profession relies heavily on vocal communication, helping them find strategies to maintain their occupational roles.\n\nGroup 4 - Final Review and Decision Team (FRDT)\nMember 1: Senior Consultant from each specialty (Lead) - Provides overarching expertise and guidance in decision\nMember 2: Clinical Decision Specialist - Coordinates the different recommendations from the various teams and formulates a comprehensive treatment plan.\nMember 3: Advanced Diagnostic Support - Utilizes advanced diagnostic tools and techniques to confirm the exact extent and cause of nerve damage, aiding in the final decision.\n\nAbove is just an example, thus, you should organize your own unique MDTs but you should include Initial Assessment Team (IAT) and Final Review and Decision Team (FRDT) in your recruitment plan. When you return your answer, please strictly refer to the above format.")
     recruited = tmp_agent.chat(f"Question: {question}\n\nYou should organize {num_teams} MDTs with different specialties or purposes and each MDT should have {num_agents} clinicians. Considering the medical question and the options, please return your recruitment plan to better make an accurate answer.\n\nFor example:{recruit_example} When you return your answer, please strictly refer to the above format.")
+    token_stats_tmp_agent= tmp_agent.get_token_stats()
+    for model_name, stats in token_stats_tmp_agent.items():
+        num_llm_calls = stats['num_llm_calls'] + num_llm_calls
+        Prompt_Tokens = stats['prompt_tokens'] + Prompt_Tokens
+        completion_tokens = stats['completion_tokens'] + completion_tokens
     #问题：{问题}\n\n您应当组建 {团队数量} 个具有不同专业特长或不同目的的医疗多学科团队（MDT），并且每个 MDT 都应配备 {医生数量} 名临床医生。考虑到医疗问题以及所提供的选项，请返回您的招募计划，以便更准确地给出答案。
     # \n\n例如，以下可以是一个示例答案：
     # \n小组 1 - 初步评估团队（IAT）
@@ -783,14 +861,33 @@ def process_advanced_query(question,  prompt_file,model_info,num_teams,num_agent
     for idx, decision in enumerate(final_decisions):
         compiled_report += f"Group {idx+1} - {decision[0]}\n{decision[1]}\n\n"
 
+    # for model_name, stats in enumerate(group_instances):
+    for idx, agent in enumerate(group_instances):
+        idx_stats = agent.get_group_token_stats()
+        for model_name, stats in idx_stats.items():
+            num_llm_calls = stats['num_llm_calls'] + num_llm_calls
+            Prompt_Tokens = stats['prompt_tokens'] + Prompt_Tokens
+            completion_tokens = stats['completion_tokens'] + completion_tokens
+
+
     # STEP 3. Final Decision
     decision_prompt = f"""You are an experienced medical expert. Now, given the investigations from multidisciplinary teams (MDT), please review them very carefully and return your final decision to the medical query.Provide only the letter corresponding to your answer choice (A/B/C/D/E/F)."""
     tmp_agent = Agent(instruction=decision_prompt, role='decision maker', model_info=model_info)
     tmp_agent.chat(decision_prompt)
 
     final_decision = tmp_agent.temp_responses(f"""Investigation:\n{initial_assessment_report}\n\nQuestion: {question}""", img_path=None)
+    token_stats_tmp = tmp_agent.get_token_stats()
+    for model_name, stats in token_stats_tmp.items():
+        num_llm_calls = stats['num_llm_calls'] + num_llm_calls
+        Prompt_Tokens = stats['prompt_tokens'] + Prompt_Tokens
+        completion_tokens = stats['completion_tokens'] + completion_tokens
 
-    return final_decision
+    token_stats = {
+        model_info: {"num_llm_calls": num_llm_calls, "prompt_tokens": Prompt_Tokens,
+                     "completion_tokens": completion_tokens}
+    }
+
+    return final_decision,token_stats
 
 
 def load_prompts_from_file(file_path: str) -> Dict[str, str]:

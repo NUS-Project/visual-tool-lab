@@ -59,8 +59,8 @@ class MAS():
             "max_tokens": self.model_max_tokens,
             "timeout": self.model_timeout
         }
-        if "o1" not in model_name:              # OpenAI's o1 models do not support temperature
-            request_dict["temperature"] = model_temperature
+        # if "o1" not in model_name:              # OpenAI's o1 models do not support temperature
+        #     request_dict["temperature"] = model_temperature
 
         llm = openai.OpenAI(base_url=model_url, api_key=api_key)
         try:

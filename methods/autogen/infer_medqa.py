@@ -12,6 +12,7 @@ def autogen_infer_medqa(question: str, root_path: str, model_info: str = "gpt-4o
 
     result = mas.inference({"query": question})
     response = (result or {}).get("response", "")
-
-    choice = extract_medqa_choice(response)
-    return choice or str(response).strip()
+    print(f"autogen_response:{response}")
+    token_stats = mas.get_token_stats()
+    # choice = extract_medqa_choice(response)
+    return str(response).strip(),token_stats

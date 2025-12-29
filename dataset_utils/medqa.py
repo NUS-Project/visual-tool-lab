@@ -34,7 +34,7 @@ def format_medqa_question(sample: Dict[str, Any]) -> str:
 
 _CHOICE_PATTERNS = [
     re.compile(r"\(([A-E])\)", re.IGNORECASE),
-    re.compile(r"(?:the\s+answer\s+is\s*[:：]?\s*)\(?\s*([A-E])\s*\)?", re.IGNORECASE),
+    re.compile(r"(?:the\s+answer\s+is\s*[:：]?\s*)\(?\s*([A-F])\s*\)?", re.IGNORECASE),
 ]
 
 

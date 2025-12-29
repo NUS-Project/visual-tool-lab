@@ -16,8 +16,8 @@ def build_general_config(
     model_info: str,
     *,
     model_temperature: float = 0.2,
-    model_max_tokens: int = 512,
-    model_timeout: int = 60,
+    model_max_tokens: int = 16384,
+    model_timeout: int = 600,
 ) -> Dict[str, Any]:
     """Build MASLab-style general_config from this repo's model_api_config.json.
 
